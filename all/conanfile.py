@@ -22,6 +22,10 @@ class OpenUSD(ConanFile):
         'opencolorio': [True, False], # enable OpenColorIO support for imaging
         'openimageio': [True, False], # enable OpenImageIO support for imaging
         'embree': [True, False], # enable embree-based rendering plugin
+        'draco': [True, False], # enable usdDraco plugin
+        'alembic': [True, False], # enable usdAbc plugin
+        'openvdb': [True, False],
+        'safety_over_speed': [True, False], # trade performance for safety with malformed input files
     }
     default_options = {
         'shared': True,
@@ -30,15 +34,20 @@ class OpenUSD(ConanFile):
         'imaging': True,
         'usdimaging': True,
         'tools': True,
-        'opencolorio': False,
-        'ptex': False,
-        'openimageio': False,
+        'opencolorio': True,
+        'ptex': True,
+        'openimageio': True,
+        'draco': True,
+        'alembic': True,
+        'openvdb': True,
+
+        'safety_over_speed': True,
 
         'materialx': True,
         'materialx/*:render': True,
         
-        'onetbb/*:tbbmalloc': True,
-        'onetbb/*:tbbproxy': True,
+        'onetbb/*:tbbmalloc': False,
+        'onetbb/*:tbbproxy': False,
 
         'embree': False,
         'embree/*:with_tbb': True,
@@ -88,8 +97,21 @@ class OpenUSD(ConanFile):
         self.do_requires('opensubdiv')
         self.do_requires('boost')
 
+        needs_imath = False
+
         if self.options.ptex:
             self.do_requires('ptex')
+
+        if self.options.draco:
+            self.do_requires('draco')
+        
+        if self.options.alembic:
+            self.do_requires('alembic')
+            needs_imath = True
+
+        if self.options.openvdb:
+            self.do_requires('openvdb')
+            needs_imath = True
 
         if self.options.embree:
             self.do_requires('embree3')
@@ -101,11 +123,15 @@ class OpenUSD(ConanFile):
             self.do_requires('materialx')
 
         if self.settings.os == 'Linux' and self.options.imaging:
-            self.requires('xorg/system')
+            # self.requires('xorg/system')
             self.requires('opengl/system')
         
         if self.options.openimageio:
             self.do_requires('openimageio')
+            needs_imath = True
+
+        if needs_imath:
+            self.do_requires('imath')
 
         # MISSING
         # self.requires('osl/1.10.9')
@@ -116,13 +142,34 @@ class OpenUSD(ConanFile):
 
 
     def source(self):
-        get(self, **self.conan_data[self.version]["sources"], strip_root=True, destination=self.source_folder)
+        # get(self, **self.conan_data[self.version]["sources"], strip_root=True, destination=self.source_folder)
+        copy(self, '*', src=f'/home/aramallo/ZIPBUCKET/OpenUSD-{self.version}', dst=self.source_folder)
 
 
     def _patch_sources_cmake(self):
-        os.remove(Path(self.source_folder)/"cmake"/"modules"/"FindTBB.cmake")
-        os.remove(Path(self.source_folder)/"cmake"/"modules"/"FindOpenSubdiv.cmake")
-        os.remove(Path(self.source_folder)/"cmake"/"modules"/"FindEmbree.cmake")
+        # OpenUSD uses these cmake files to find third party libraries, but the goal is to provide
+        # those libraries via conan, so we delete them and make sure to produce the correct cache
+        # variables/target aliases that OpenUSD expects from these modules
+        files_to_delete = [
+            'FindTBB.cmake',
+            'FindOpenSubdiv.cmake',
+            'FindEmbree.cmake',
+            'FindAlembic.cmake',
+            'FindAnimX.cmake',
+            'FindDraco.cmake',
+            'FindJinja2.cmake',
+            'FindOpenColorIO.cmake',
+            'FindOpenEXR.cmake',
+            'FindOpenImageIO.cmake',
+            'FindOpenVDB.cmake',
+            'FindOSL.cmake',
+            'FindPTex.cmake',
+            # 'FindPyOpenGL.cmake',
+            # 'FindPySide.cmake',
+            'FindRenderman.cmake',
+        ]
+        for file in files_to_delete:
+            os.remove(Path(self.source_folder)/"cmake"/"modules"/file)
 
 
     def generate(self):
@@ -139,6 +186,17 @@ class OpenUSD(ConanFile):
         if self.options.ptex:
             tc.variables['PTEX_LIBRARY'] = self.dependencies["ptex"].cpp_info.get_property('cmake_target_name')
 
+        if self.options.draco:
+            tc.variables['DRACO_LIBRARY'] = self.dependencies["draco"].cpp_info.get_property('cmake_target_name')
+
+        if self.options.openvdb:
+            tc.variables['OPENVDB_LIBRARY'] = self.dependencies["openvdb"].cpp_info.get_property('cmake_target_name')
+
+        if self.options.alembic:
+            tc.variables['ALEMBIC_LIBRARIES'] = self.dependencies["alembic"].cpp_info.get_property('cmake_target_name')
+            tc.variables['PXR_ENABLE_HDF5_SUPPORT'] = self.dependencies["alembic"].options.with_hdf5
+            tc.variables['ALEMBIC_FOUND'] = True
+
         boost_py_ver = str(self.dependencies["boost"].options.python_version).replace('.', '')
         tc.variables[f'Boost_PYTHON{boost_py_ver}_LIBRARY'] = "Boost::python"
 
@@ -152,8 +210,34 @@ class OpenUSD(ConanFile):
             dep.set_property("embree3", "cmake_additional_variables_prefixes", ["EMBREE"])
             tc.variables['EMBREE_LIBRARY'] = self.dependencies["embree3"].cpp_info.get_property('cmake_target_name')
 
-        dep.set_property("opencolorio", "cmake_additional_variables_prefixes", ["OCIO"])
-        dep.set_property("openimageio", "cmake_additional_variables_prefixes", ["OIIO"])
+        if self.options.openimageio:
+            dep.set_property("opencolorio", "cmake_additional_variables_prefixes", ["OCIO"])
+
+        if self.options.opencolorio:
+            dep.set_property("openimageio", "cmake_additional_variables_prefixes", ["OIIO"])
+
+        if self.options.materialx:
+            # create aliases like 'materialx::MaterialXCore' => 'MaterialXCore'
+            # materialx conan package produces the former, openusd expects the latter
+            mtx = self.dependencies["materialx"]
+            mtx_comps = {
+                'MaterialXCore',
+                'MaterialXFormat',
+                'MaterialXGenGlsl',
+                'MaterialXGenMdl',
+                'MaterialXGenMsl',
+                'MaterialXGenOsl',
+                'MaterialXGenShader',
+                'MaterialXRender',
+                'MaterialXRenderGlsl',
+                'MaterialXRenderHw',
+                'MaterialXRenderOsl',
+                'MaterialXRenderMsl'
+            }
+            for comp in mtx_comps:
+                if comp in mtx.cpp_info.components.keys():
+                    info = mtx.cpp_info.components[comp]
+                    info.set_property('cmake_target_aliases', [comp])
 
         tc.generate()
         dep.generate()
@@ -169,15 +253,18 @@ class OpenUSD(ConanFile):
             variables = {
                 'PXR_BUILD_MONOLITHIC': False,
 
+                'PXR_PREFER_SAFETY_OVER_SPEED': self.options.safety_over_speed,
+
                 'PXR_ENABLE_PYTHON_SUPPORT': True,
                 'PXR_ENABLE_GL_SUPPORT': True,
-                'PXR_ENABLE_VULKAN_SUPPORT': False, # experimental/requires glslang
+                'PXR_ENABLE_VULKAN_SUPPORT': False, # for hgiVulkan, may need to patch `cmake/defaults/Packages.cmake`
                 'PXR_ENABLE_OSL_SUPPORT': False, # currently, no OSL conan package exists
+                'PXR_ENABLE_OPENVDB_SUPPORT': self.options.openvdb,
 
                 'PXR_BUILD_EMBREE_PLUGIN': self.options.embree,
                 'PXR_BUILD_PRMAN_PLUGIN': False,
-                'PXR_BUILD_ALEMBIC_PLUGIN': False, # TODO conan package exists
-                'PXR_BUILD_DRACO_PLUGIN': False, # TODO conan package exists
+                'PXR_BUILD_ALEMBIC_PLUGIN': self.options.alembic,
+                'PXR_BUILD_DRACO_PLUGIN': self.options.draco,
 
                 'PXR_BUILD_DOCUMENTATION': False,
                 'PXR_BUILD_TESTS': False,
@@ -186,7 +273,7 @@ class OpenUSD(ConanFile):
                 
                 'PXR_BUILD_IMAGING': self.options.imaging,
                 'PXR_BUILD_USD_TOOLS': self.options.tools,
-                'PXR_BUILD_USDVIEW': True,
+                'PXR_BUILD_USDVIEW': self.options.tools,
                 
                 'PXR_ENABLE_PTEX_SUPPORT': self.options.ptex,
                 'PXR_ENABLE_MATERIALX_SUPPORT': self.options.materialx,
@@ -209,7 +296,7 @@ class OpenUSD(ConanFile):
 
     def package_info(self):
         self.boost_python_libs = ['boost::python']
-        self.tbb_libs = ['onetbb::libtbb', 'onetbb::tbbmalloc']
+        self.tbb_libs = ['onetbb::onetbb']
 
         self._auto_info()
 
@@ -217,36 +304,44 @@ class OpenUSD(ConanFile):
         self.buildenv_info.prepend_path('PATH', str(p_pkg/'bin'))
         self.buildenv_info.prepend_path('PYTHONPATH', str(p_pkg/'lib'/'python'))
 
-        # embree isn't found by depproc.py, so create the component manually
+        #-------------------------------------------------------------------------------------------
+        # PLUGINS These are not found by depproc.py and don't expose any libs, but must be declared
+        # as components anyways because conan may complain about unused dependencies
+
         if self.options.embree:
             self.cpp_info.components["hdEmbree"].requires = ['plug', 'tf', 'vt', 'gf', 'work', 'hf', 'hd', 'hdx', 'embree3::embree3'] + self.tbb_libs
-            self.cpp_info.components["hdEmbree"].libs = [] # hdEmbree is a plugin, not a library
+            self.cpp_info.components["hdEmbree"].libs = []
 
-        for c in self.cpp_info.components:
-            comp = self.cpp_info.components[c]
-
-            if self.options.ptex:
-                comp.requires.append('ptex::ptex')
-            
-            if self.options.opencolorio:
-                comp.requires.append('opencolorio::opencolorio')
-            
-            if self.options.openimageio:
-                comp.requires.append('openimageio::openimageio')
+        if self.options.draco:
+            self.cpp_info.components["usdDraco"].requires = ['tf', 'gf', 'sdf', 'usd', 'usdGeom', 'draco::draco']
+            self.cpp_info.components["usdDraco"].libs = []
+        
+        if self.options.alembic:
+            self.cpp_info.components["usdAbc"].requires = ['tf', 'work', 'sdf', 'usd', 'usdGeom', 'alembic::alembic', 'imath::imath_lib', 'imath::imath_config']
+            self.cpp_info.components["usdAbc"].libs = []
+        
+        if self.options.openvdb:
+            self.cpp_info.components["hioOpenVDB"].requires = ['ar', 'gf', 'hio', 'tf', 'usd', 'imath::imath_lib', 'openvdb::openvdb']
+            self.cpp_info.components["hioOpenVDB"].libs = []
+        
+        if self.options.openimageio:
+            self.cpp_info.components["hioOiio"].requires = ['ar', 'arch', 'gf', 'hio', 'tf', 'openimageio::openimageio', 'imath::imath_lib']
+            self.cpp_info.components["hioOiio"].libs = []
+        
+        if self.options.opencolorio:
+            self.cpp_info.components["hdx"].requires.append('opencolorio::opencolorio')
+        
+        if self.options.ptex:
+            self.cpp_info.components["hdSt"].requires.append('ptex::ptex')
+        #-------------------------------------------------------------------------------------------
 
         if self.settings.os == 'Linux':
             self.cpp_info.components["arch"].system_libs = ['m', 'dl']
             gldeps = [
                 'opengl::opengl',
-                'xorg::x11',
-                'xorg::ice',
-                'xorg::sm',
-                'xorg::xext',
             ]
             self.cpp_info.components["garch"].requires.extend(gldeps)
             self.cpp_info.components["glf"].requires.extend(gldeps)
-        else:
-            assert f"OS '{self.settings.os}' currently not supported by this recipe"
     
 
     # this method was automatically generated with "depproc.py" and should not be modified directly

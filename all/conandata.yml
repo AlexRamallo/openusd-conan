@@ -12,7 +12,7 @@
       version: "1.84.0" # to avoid conflict with the (wrong) openimageio version we're using
       orig: "1.76.0"
     materialx:
-      version: "1.38.8"
+      version: "1.38.10"
       orig: "1.38.10"
     onetbb:
       force: True # resolve opensubdiv conflict
@@ -38,4 +38,16 @@
       orig: "2.4.2"
     embree3:
       version: "3.13.5"
-      orig: "3.13.5"
+      orig: "3.13.3"
+    alembic:
+      version: "1.8.5"
+      orig: "1.8.5"
+    draco:
+      version: "1.5.6" # 1.3.6 exists but has build errors on recent compilers
+      orig: "1.3.6"
+    openvdb:
+      version: "9.1.0"
+      orig: "9.1.0"
+    imath:
+      version: "3.1.9" #alembic explicitly depends on this version, so use it to avoid conflict
+      orig: null
