@@ -1,25 +1,10 @@
 #! /usr/bin/env python
-
-"""
-	This is a helper script to scrape all of the components and their dependencies, and is used to
-	generate the `_auto_info` method in conanfile.py. It works by parsing `pxrTargets.cmake`
-	build artifact from a standard openusd build. 
-
-	Example usage:
-
-	```
-		./depproc.py /path/to/openusd/build
-	```
-
-	This should be re-run when there's a new openusd version and compared with the existing.
-"""
-
 import sys, json
 
-tab = ' ' * 4
+tab = ' '*4
 
-# These are the C lib components of some cli programs with python entrypoints. They should be used
-# via their cli and not linked directly as libraries, so they're not exposed as conan components.
+# these are the C lib components of some cli programs with python entrypoints
+# they should be used via their cli and not linked directly as libraries
 skip_libs = [
 	'usdBakeMtlx',
 	'usdviewq',
@@ -28,6 +13,7 @@ skip_libs = [
 known_libs = [
 	'usd_arch',
 	'usd_tf',
+	'usd_ts',
 	'usd_gf',
 	'usd_js',
 	'usd_trace',
@@ -41,6 +27,7 @@ known_libs = [
 	'usd_sdr',
 	'usd_pcp',
 	'usd_usd',
+	'usd_python',
 	'usd_usdGeom',
 	'usd_usdVol',
 	'usd_usdMedia',
@@ -80,19 +67,28 @@ known_libs = [
 	'usd_usdVolImaging',
 	'usd_usdAppUtils',
 	'usd_usdBakeMtlx',
+	'usd_usdSemantics', # added in 24.11
+	'usd_pegtl',
+	'usd_usdValidation',
+	'usd_usdGeomValidators',
+	'usd_usdShadeValidators',
+	'usd_usdSkelValidators',
+	'usd_usdUtilsValidators',
 ]
 
 def replace_known_reqs(reqstr):
+	if 'm' in reqstr: return None
 	if reqstr == 'dl': return None
 	if '/' in reqstr: return None
 	
-	# TODO: is this ok?
 	if 'Python3::Python' in reqstr: return None
 
+	if 'OpenGL::GL' in reqstr: return None	
+
 	if reqstr == 'OpenColorIO::OpenColorIO': return 'opencolorio::opencolorio'
-	if reqstr == 'TBB::tbb': return 'onetbb::libtbb'
-	if reqstr == 'TBB::tbbmalloc': return 'onetbb::tbbmalloc'
-	if reqstr == 'TBB::tbbmalloc_proxy': return 'onetbb::tbbmalloc_proxy'
+	if reqstr.lower() == 'tbb::tbb': return 'onetbb::libtbb'
+	if reqstr.lower() == 'tbb::tbbmalloc': return 'onetbb::tbbmalloc'
+	if reqstr.lower() == 'tbb::tbbmalloc_proxy': return 'onetbb::tbbmalloc_proxy'
 	if 'materialx' in reqstr.lower():
 		if '::' in reqstr:
 			reqstr = reqstr.split('::')[1]
@@ -129,25 +125,44 @@ def get_targets(filename):
 				sp = l.replace('"','').split('INTERFACE_LINK_LIBRARIES ')[1]
 				items = [s.replace('\n', '').replace('${_IMPORT_PREFIX}/', '') for s in sp.split(';')]
 				out[cur_target]['link_libs'] = []
-				out[cur_target]['needs_tbb'] = False
+				
+				# TODO: refactor this mess
 				out[cur_target]['needs_boost_python'] = False
+				out[cur_target]['needs_osd'] = False
+				out[cur_target]['needs_tbb'] = False
+				out[cur_target]['needs_openvdb'] = False
+				out[cur_target]['needs_alembic'] = False
+				out[cur_target]['needs_draco'] = False
+				out[cur_target]['needs_ptex'] = False
+				out[cur_target]['needs_ocio'] = False
+				out[cur_target]['needs_oiio'] = False
 				out[cur_target]['materialx_libs'] = []
 				for lib in items:
-					if 'libboost_python' in lib.lower():
+					llib = lib.lower()
+					if 'boost' in llib: # pretty sure 'boost' deps are only on boost python
 						out[cur_target]['needs_boost_python'] = True
-					elif 'libtbb' in lib.lower():
+					elif 'tbb' in llib:
 						out[cur_target]['needs_tbb'] = True
-					elif 'libosd' in lib.lower():
-						if 'libosdCPU' in lib:
-							out[cur_target]['link_libs'].append('opensubdiv::osdcpu')
-						elif 'libosdGPU' in lib:
-							out[cur_target]['link_libs'].append('opensubdiv::osdgpu')
-						else:
-							assert False, f'Unrecognized libosd library: {lib}'
-					elif 'materialx' in lib.lower():
-						out[cur_target]['materialx_libs'].append(replace_known_reqs(lib))
+					elif 'openvdb' in llib:
+						out[cur_target]['needs_openvdb'] = True
+					elif 'alembic' in llib:
+						out[cur_target]['needs_alembic'] = True
+					elif 'draco' in llib:
+						out[cur_target]['needs_draco'] = True
+					elif 'ptex::' in llib:
+						out[cur_target]['needs_needs_ptex'] = True
+					elif 'opensubdiv' in llib:
+						out[cur_target]['needs_osd'] = True
+					elif 'opencolorio' in llib:
+						out[cur_target]['needs_ocio'] = True
+					elif 'openimageio' in llib:
+						out[cur_target]['needs_oiio'] = True
+					elif 'materialx' in llib:
+						if k := replace_known_reqs(lib):
+							out[cur_target]['materialx_libs'].append(k)
 					else:
-						out[cur_target]['link_libs'].append(replace_known_reqs(lib))
+						if k := replace_known_reqs(lib):
+							out[cur_target]['link_libs'].append(k)
 			
 			if 'INTERFACE_SYSTEM_INCLUDE_DIRECTORIES' in l:
 				sp = l.replace('"','').split('INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ')[1]
@@ -158,7 +173,10 @@ def get_targets(filename):
 
 def get_libs(name, all_targets):
 	if '::' in name: return []
-	return [f'usd_{name}']
+	if name in known_libs:
+		return [name]
+	else:
+		return [f'usd_{name}']
 
 
 def build_component(name, all_targets):
@@ -168,18 +186,40 @@ def build_component(name, all_targets):
 
 	reqs = []
 	libs = get_libs(name, all_targets)
-	for req in target['link_libs']:
+	for req in target.get('link_libs', []):
 		if req:
 			reqs.append(req)
 
 	for l in libs:
-		assert l in known_libs, f"Uknown lib: {l}"
+		assert l in known_libs, f"Unknown lib: {l}"
 
 	reqstr = str(reqs)
 	if target['needs_boost_python']:
 		reqstr += ' + self.boost_python_libs'
+	
+	if target['needs_osd']:
+		reqstr += ' + self.opensubdiv_libs'
+	
 	if target['needs_tbb']:
-		reqstr += ' + self.tbb_libs'
+		reqstr += ' + self.onetbb_libs'
+	
+	if target['needs_draco']:
+		reqstr += ' + self.draco_libs'
+	
+	if target['needs_ptex']:
+		reqstr += ' + self.ptex_libs'
+
+	if target['needs_ocio']:
+		reqstr += ' + self.ocio_libs'
+	
+	if target['needs_oiio']:
+		reqstr += ' + self.oiio_libs'
+	
+	if target['needs_openvdb']:
+		reqstr += ' + self.openvdb_libs'
+	
+	if target['needs_alembic']:
+		reqstr += ' + self.alembic_libs'
 
 	if name in ['usdMtlx', 'hdMtlx']:
 		# make sure to only include these components if the materialx option is true
